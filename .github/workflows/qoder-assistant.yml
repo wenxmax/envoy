@@ -58,4 +58,4 @@ jobs:
           prompt: |
             /assistant
             ${{ steps.build_args.outputs.args }}
-            OUTPUT_LANGUAGE:English
+            OUTPUT_LANGUAGE:Chinese
