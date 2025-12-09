@@ -67,6 +67,7 @@ constexpr std::string_view ClearRouteCacheKey = "clear_route_cache";
 constexpr std::string_view DisableClearRouteCache = "off";
 constexpr std::string_view SetDecoderBufferLimit = "set_decoder_buffer_limit";
 constexpr std::string_view SetEncoderBufferLimit = "set_encoder_buffer_limit";
+constexpr std::string_view WasmRebuildKey = "wasm_need_rebuild";
 
 bool stringViewToUint32(std::string_view str, uint32_t& out_value) {
   try {
@@ -455,10 +456,17 @@ WasmResult serializeValue(Filters::Common::Expr::CelValue value, std::string* re
   return WasmResult::SerializationFailure;
 }
 
+#if defined(HIGRESS)
+#define PROPERTY_TOKENS(_f)                                                                        \
+  _f(NODE) _f(LISTENER_DIRECTION) _f(LISTENER_METADATA) _f(CLUSTER_NAME) _f(CLUSTER_METADATA)      \
+      _f(ROUTE_NAME) _f(ROUTE_METADATA) _f(PLUGIN_NAME) _f(UPSTREAM_HOST_METADATA)                 \
+          _f(PLUGIN_ROOT_ID) _f(PLUGIN_VM_ID) _f(PLUGIN_VM_MEMORY) _f(CONNECTION_ID)
+#else
 #define PROPERTY_TOKENS(_f)                                                                        \
   _f(NODE) _f(LISTENER_DIRECTION) _f(LISTENER_METADATA) _f(CLUSTER_NAME) _f(CLUSTER_METADATA)      \
       _f(ROUTE_NAME) _f(ROUTE_METADATA) _f(PLUGIN_NAME) _f(UPSTREAM_HOST_METADATA)                 \
           _f(PLUGIN_ROOT_ID) _f(PLUGIN_VM_ID) _f(CONNECTION_ID)
+#endif
 
 static inline std::string downCase(std::string s) {
   std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
@@ -613,6 +621,13 @@ Context::findValue(absl::string_view name, Protobuf::Arena* arena, bool last) co
     return CelValue::CreateStringView(toAbslStringView(root_id()));
   case PropertyToken::PLUGIN_VM_ID:
     return CelValue::CreateStringView(toAbslStringView(wasm()->vm_id()));
+#if defined(HIGRESS)
+  case PropertyToken::PLUGIN_VM_MEMORY:
+    if (wasm() && wasm()->wasm_vm()) {
+      return CelValue::CreateUint64(wasm()->wasm_vm()->getMemorySize());
+    }
+    break;
+#endif
   }
   return {};
 }
@@ -720,12 +735,30 @@ Http::HeaderMap* Context::getMap(WasmHeaderMapType type) {
 }
 
 const Http::HeaderMap* Context::getConstMap(WasmHeaderMapType type) {
+#if defined(HIGRESS)
+  const StreamInfo::StreamInfo* request_stream_info = getConstRequestStreamInfo();
+#endif
   switch (type) {
   case WasmHeaderMapType::RequestHeaders:
     if (access_log_phase_) {
       return access_log_request_headers_;
     }
+#if defined(HIGRESS)
+    // Fallback mechanism for retrieving request headers:
+    // 1. First try the cached request_headers_ pointer (most common case)
+    // 2. If null, attempt to retrieve from StreamInfo (e.g., after internal redirects or
+    //    when headers are stored in stream info but not directly cached)
+    // 3. Return nullptr if both sources are unavailable
+    if (request_headers_ != nullptr) {
+      return request_headers_;
+    }
+    if (request_stream_info == nullptr) {
+      return nullptr;
+    }
+    return request_stream_info->getRequestHeaders();
+#else
     return request_headers_;
+#endif
   case WasmHeaderMapType::RequestTrailers:
     if (access_log_phase_) {
       return nullptr;
@@ -1354,7 +1387,13 @@ WasmResult Context::setProperty(std::string_view path, std::string_view value) {
                                         prototype.life_span_);
   }
 #if defined(HIGRESS)
-  if (path == ClearRouteCacheKey) {
+  if (path == WasmRebuildKey) {
+    if (wasm_) {
+      wasm_->setShouldRebuild(true);
+      ENVOY_LOG(debug, "Wasm rebuild flag set by plugin");
+    }
+    return WasmResult::Ok;
+  } else if (path == ClearRouteCacheKey) {
     disable_clear_route_cache_ = value == DisableClearRouteCache;
   } else if (path == SetDecoderBufferLimit && decoder_callbacks_) {
     uint32_t buffer_limit;

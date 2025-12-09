@@ -171,6 +171,831 @@ TEST_F(ProtobufUtilityTest, EvaluateFractionalPercent) {
 
 } // namespace ProtobufPercentHelper
 
+#if defined(HIGRESS) && defined(ENVOY_ENABLE_FULL_PROTOS)
+TEST_F(ProtobufUtilityTest, HashCache) {
+  ProtobufWkt::StringValue str1, str2, str3;
+  TestUtility::loadFromJson("\"hello world\"", str1);
+  TestUtility::loadFromJson("\"hello world\"", str2);
+  TestUtility::loadFromJson("\"hello world!\"", str3);
+
+  ProtobufWkt::Struct struct1, struct2, struct3;
+  (*struct1.mutable_fields())["field"].mutable_string_value()->assign(str1.value());
+  (*struct2.mutable_fields())["field"].mutable_string_value()->assign(str2.value());
+  (*struct3.mutable_fields())["field"].mutable_string_value()->assign(str3.value());
+
+  EXPECT_EQ(HashCachedMessageUtil::hash(struct1), HashCachedMessageUtil::hash(struct2));
+  EXPECT_NE(HashCachedMessageUtil::hash(struct1), HashCachedMessageUtil::hash(struct3));
+
+  EXPECT_TRUE(struct1.fields().at("field").HasCachedHashValue());
+  EXPECT_TRUE(struct2.fields().at("field").HasCachedHashValue());
+  EXPECT_TRUE(struct3.fields().at("field").HasCachedHashValue());
+
+  ProtobufWkt::ListValue list1, list2, list3;
+  auto* v1 = list1.add_values();
+  v1->set_string_value("hello");
+  auto* v2 = list1.add_values();
+  v2->set_string_value("world");
+
+  auto* v3 = list2.add_values();
+  v3->set_string_value("hello");
+  auto* v4 = list2.add_values();
+  v4->set_string_value("world");
+
+  auto* v5 = list3.add_values();
+  v5->set_string_value("hello");
+  auto* v6 = list3.add_values();
+  v6->set_string_value("world!");
+
+  EXPECT_EQ(HashCachedMessageUtil::hash(list1), HashCachedMessageUtil::hash(list2));
+  EXPECT_NE(HashCachedMessageUtil::hash(list1), HashCachedMessageUtil::hash(list3));
+
+  EXPECT_TRUE(v1->HasCachedHashValue());
+  EXPECT_TRUE(v2->HasCachedHashValue());
+  EXPECT_TRUE(v3->HasCachedHashValue());
+  EXPECT_TRUE(v4->HasCachedHashValue());
+  EXPECT_TRUE(v5->HasCachedHashValue());
+  EXPECT_TRUE(v6->HasCachedHashValue());
+
+  // Test direct message nesting (not map) - using Value with struct_value
+  ProtobufWkt::Value nested_value1, nested_value2, nested_value3;
+
+  // Create nested structure: Value -> Struct -> Value -> StringValue
+  auto* nested_struct1 = nested_value1.mutable_struct_value();
+  (*nested_struct1->mutable_fields())["nested_field"].set_string_value("nested hello world");
+
+  auto* nested_struct2 = nested_value2.mutable_struct_value();
+  (*nested_struct2->mutable_fields())["nested_field"].set_string_value("nested hello world");
+
+  auto* nested_struct3 = nested_value3.mutable_struct_value();
+  (*nested_struct3->mutable_fields())["nested_field"].set_string_value("nested hello world!");
+
+  EXPECT_EQ(HashCachedMessageUtil::hash(nested_value1), HashCachedMessageUtil::hash(nested_value2));
+  EXPECT_NE(HashCachedMessageUtil::hash(nested_value1), HashCachedMessageUtil::hash(nested_value3));
+
+  // Check that all nested messages have cached hash values
+  EXPECT_TRUE(nested_value1.HasCachedHashValue());
+  EXPECT_TRUE(nested_value2.HasCachedHashValue());
+  EXPECT_TRUE(nested_value3.HasCachedHashValue());
+
+  // Check nested struct messages
+  EXPECT_TRUE(nested_value1.struct_value().HasCachedHashValue());
+  EXPECT_TRUE(nested_value2.struct_value().HasCachedHashValue());
+  EXPECT_TRUE(nested_value3.struct_value().HasCachedHashValue());
+
+  // Check the nested Value objects inside struct
+  EXPECT_TRUE(nested_value1.struct_value().fields().at("nested_field").HasCachedHashValue());
+  EXPECT_TRUE(nested_value2.struct_value().fields().at("nested_field").HasCachedHashValue());
+  EXPECT_TRUE(nested_value3.struct_value().fields().at("nested_field").HasCachedHashValue());
+
+  // Test deeper nesting: Value -> Struct -> Value -> Struct -> Value -> StringValue
+  ProtobufWkt::Value deep_nested_value1, deep_nested_value2;
+
+  auto* deep_struct1 = deep_nested_value1.mutable_struct_value();
+  auto* deep_inner_struct1 = (*deep_struct1->mutable_fields())["deep_field"].mutable_struct_value();
+  (*deep_inner_struct1->mutable_fields())["inner_field"].set_string_value("deep nested value");
+
+  auto* deep_struct2 = deep_nested_value2.mutable_struct_value();
+  auto* deep_inner_struct2 = (*deep_struct2->mutable_fields())["deep_field"].mutable_struct_value();
+  (*deep_inner_struct2->mutable_fields())["inner_field"].set_string_value("deep nested value");
+
+  EXPECT_EQ(HashCachedMessageUtil::hash(deep_nested_value1),
+            HashCachedMessageUtil::hash(deep_nested_value2));
+
+  // Check that all levels of nesting have cached hash values
+  EXPECT_TRUE(deep_nested_value1.HasCachedHashValue());
+  EXPECT_TRUE(deep_nested_value2.HasCachedHashValue());
+
+  EXPECT_TRUE(deep_nested_value1.struct_value().HasCachedHashValue());
+  EXPECT_TRUE(deep_nested_value2.struct_value().HasCachedHashValue());
+
+  EXPECT_TRUE(deep_nested_value1.struct_value().fields().at("deep_field").HasCachedHashValue());
+  EXPECT_TRUE(deep_nested_value2.struct_value().fields().at("deep_field").HasCachedHashValue());
+
+  EXPECT_TRUE(deep_nested_value1.struct_value()
+                  .fields()
+                  .at("deep_field")
+                  .struct_value()
+                  .HasCachedHashValue());
+  EXPECT_TRUE(deep_nested_value2.struct_value()
+                  .fields()
+                  .at("deep_field")
+                  .struct_value()
+                  .HasCachedHashValue());
+
+  EXPECT_TRUE(deep_nested_value1.struct_value()
+                  .fields()
+                  .at("deep_field")
+                  .struct_value()
+                  .fields()
+                  .at("inner_field")
+                  .HasCachedHashValue());
+  EXPECT_TRUE(deep_nested_value2.struct_value()
+                  .fields()
+                  .at("deep_field")
+                  .struct_value()
+                  .fields()
+                  .at("inner_field")
+                  .HasCachedHashValue());
+}
+
+TEST_F(ProtobufUtilityTest, MessageUtilRecursiveHash) {
+  // Test string hashing using JSON to Proto message conversion
+  ProtobufWkt::StringValue str1, str2, str3;
+
+  // Convert JSON strings to Proto messages
+  TestUtility::loadFromJson("\"hello world\"", str1);
+  TestUtility::loadFromJson("\"hello world\"", str2);
+  TestUtility::loadFromJson("\"hello world!\"", str3);
+
+  // Test that identical strings produce same hash
+  EXPECT_EQ(HashCachedMessageUtil::hash(str1), HashCachedMessageUtil::hash(str2));
+
+  // Test that different strings produce different hashes
+  EXPECT_NE(HashCachedMessageUtil::hash(str1), HashCachedMessageUtil::hash(str3));
+
+  // Test that the hash is cached
+  EXPECT_EQ(str1.HasCachedHashValue(), true);
+
+  // Test that hash is not zero
+  EXPECT_NE(0, HashCachedMessageUtil::hash(str1));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(str2));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(str3));
+
+  // Test hash consistency
+  uint64_t hash1 = HashCachedMessageUtil::hash(str1);
+  uint64_t hash2 = HashCachedMessageUtil::hash(str1);
+  EXPECT_EQ(hash1, hash2); // Same string should always produce same hash
+
+  // Test with different string types
+  ProtobufWkt::BytesValue bytes1, bytes2;
+  // BytesValue expects base64 encoded strings
+  TestUtility::loadFromJson("\"aGVsbG8gd29ybGQ=\"", bytes1); // "hello world" in base64
+  TestUtility::loadFromJson("\"aGVsbG8gd29ybGQ=\"", bytes2); // "hello world" in base64
+
+  // BytesValue should also produce consistent hashes
+  EXPECT_EQ(HashCachedMessageUtil::hash(bytes1), HashCachedMessageUtil::hash(bytes2));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(bytes1));
+
+  // Test with different base64 strings
+  ProtobufWkt::BytesValue bytes3;
+  TestUtility::loadFromJson("\"aGVsbG8gd29ybGQh\"", bytes3); // "hello world!" in base64
+  EXPECT_NE(HashCachedMessageUtil::hash(bytes1), HashCachedMessageUtil::hash(bytes3));
+}
+
+TEST_F(ProtobufUtilityTest, MessageUtilHashComprehensive) {
+  // Test 1: Basic primitive types
+  {
+    // StringValue
+    ProtobufWkt::StringValue str1, str2, str3;
+    TestUtility::loadFromJson("\"test string\"", str1);
+    TestUtility::loadFromJson("\"test string\"", str2);
+    TestUtility::loadFromJson("\"different string\"", str3);
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(str1), HashCachedMessageUtil::hash(str2));
+    EXPECT_NE(HashCachedMessageUtil::hash(str1), HashCachedMessageUtil::hash(str3));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(str1));
+
+    // BytesValue
+    ProtobufWkt::BytesValue bytes1, bytes2;
+    TestUtility::loadFromJson("\"dGVzdCBieXRlcw==\"", bytes1); // "test bytes" in base64
+    TestUtility::loadFromJson("\"dGVzdCBieXRlcw==\"", bytes2); // "test bytes" in base64
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(bytes1), HashCachedMessageUtil::hash(bytes2));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(bytes1));
+  }
+
+  // Test 2: Numeric types
+  {
+    // Int32Value
+    ProtobufWkt::Int32Value int1, int2, int3;
+    int1.set_value(42);
+    int2.set_value(42);
+    int3.set_value(100);
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(int1), HashCachedMessageUtil::hash(int2));
+    EXPECT_NE(HashCachedMessageUtil::hash(int1), HashCachedMessageUtil::hash(int3));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(int1));
+
+    // UInt64Value
+    ProtobufWkt::UInt64Value uint1, uint2, uint3;
+    uint1.set_value(123456789);
+    uint2.set_value(123456789);
+    uint3.set_value(987654321);
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(uint1), HashCachedMessageUtil::hash(uint2));
+    EXPECT_NE(HashCachedMessageUtil::hash(uint1), HashCachedMessageUtil::hash(uint3));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(uint1));
+
+    // DoubleValue
+    ProtobufWkt::DoubleValue double1, double2, double3;
+    double1.set_value(3.14159);
+    double2.set_value(3.14159);
+    double3.set_value(2.71828);
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(double1), HashCachedMessageUtil::hash(double2));
+    EXPECT_NE(HashCachedMessageUtil::hash(double1), HashCachedMessageUtil::hash(double3));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(double1));
+
+    // BoolValue
+    ProtobufWkt::BoolValue bool1, bool2, bool3;
+    bool1.set_value(true);
+    bool2.set_value(true);
+    bool3.set_value(false);
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(bool1), HashCachedMessageUtil::hash(bool2));
+    EXPECT_NE(HashCachedMessageUtil::hash(bool1), HashCachedMessageUtil::hash(bool3));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(bool1));
+  }
+
+  // Test 3: Complex types with nested messages
+  {
+    // Struct with nested fields
+    ProtobufWkt::Struct struct1, struct2, struct3;
+
+    // Build struct1
+    (*struct1.mutable_fields())["string_field"].set_string_value("hello");
+    (*struct1.mutable_fields())["number_field"].set_number_value(42.5);
+    (*struct1.mutable_fields())["bool_field"].set_bool_value(true);
+
+    // Build struct2 (identical to struct1)
+    (*struct2.mutable_fields())["string_field"].set_string_value("hello");
+    (*struct2.mutable_fields())["number_field"].set_number_value(42.5);
+    (*struct2.mutable_fields())["bool_field"].set_bool_value(true);
+
+    // Build struct3 (different)
+    (*struct3.mutable_fields())["string_field"].set_string_value("world");
+    (*struct3.mutable_fields())["number_field"].set_number_value(42.5);
+    (*struct3.mutable_fields())["bool_field"].set_bool_value(true);
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(struct1), HashCachedMessageUtil::hash(struct2));
+    EXPECT_NE(HashCachedMessageUtil::hash(struct1), HashCachedMessageUtil::hash(struct3));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(struct1));
+
+    // Test field order independence (should produce same hash)
+    ProtobufWkt::Struct struct4;
+    (*struct4.mutable_fields())["bool_field"].set_bool_value(true);
+    (*struct4.mutable_fields())["number_field"].set_number_value(42.5);
+    (*struct4.mutable_fields())["string_field"].set_string_value("hello");
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(struct1), HashCachedMessageUtil::hash(struct4));
+  }
+
+  // Test 4: Repeated fields
+  {
+    // ListValue with repeated elements
+    ProtobufWkt::ListValue list1, list2, list3, list4;
+
+    // Build list1: [1, 2, 3]
+    list1.add_values()->set_number_value(1);
+    list1.add_values()->set_number_value(2);
+    list1.add_values()->set_number_value(3);
+
+    // Build list2: [1, 2, 3] (identical)
+    list2.add_values()->set_number_value(1);
+    list2.add_values()->set_number_value(2);
+    list2.add_values()->set_number_value(3);
+
+    // Build list3: [1, 2, 4] (different)
+    list3.add_values()->set_number_value(1);
+    list3.add_values()->set_number_value(2);
+    list3.add_values()->set_number_value(4);
+
+    // Build list4: [3, 2, 1] (different order)
+    list4.add_values()->set_number_value(3);
+    list4.add_values()->set_number_value(2);
+    list4.add_values()->set_number_value(1);
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(list1), HashCachedMessageUtil::hash(list2));
+    EXPECT_NE(HashCachedMessageUtil::hash(list1), HashCachedMessageUtil::hash(list3));
+    EXPECT_NE(HashCachedMessageUtil::hash(list1),
+              HashCachedMessageUtil::hash(list4)); // Order matters
+    EXPECT_NE(0, HashCachedMessageUtil::hash(list1));
+
+    // Test empty list
+    ProtobufWkt::ListValue empty_list;
+    EXPECT_NE(0, HashCachedMessageUtil::hash(empty_list));
+    EXPECT_NE(HashCachedMessageUtil::hash(empty_list), HashCachedMessageUtil::hash(list1));
+  }
+
+  // Test 5: Any type with packed messages
+  {
+    // Pack Struct into Any
+    ProtobufWkt::Struct original_struct;
+    (*original_struct.mutable_fields())["key1"].set_string_value("value2");
+    (*original_struct.mutable_fields())["key2"].set_number_value(123);
+
+    ProtobufWkt::Any any1, any2, any3;
+    any1.PackFrom(original_struct);
+    any2.PackFrom(original_struct);
+
+    // Create different struct for any3
+    ProtobufWkt::Struct different_struct;
+    (*different_struct.mutable_fields())["key1"].set_string_value("value1");
+    (*different_struct.mutable_fields())["key2"].set_number_value(456); // Different value
+    any3.PackFrom(different_struct);
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(any1), HashCachedMessageUtil::hash(any2));
+    EXPECT_NE(HashCachedMessageUtil::hash(any1), HashCachedMessageUtil::hash(any3));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(any1));
+
+    // Test that Any hash is different from original struct hash
+    EXPECT_NE(HashCachedMessageUtil::hash(any1), HashCachedMessageUtil::hash(original_struct));
+  }
+
+  // Test 6: Timestamp and Duration
+  {
+    // Timestamp
+    ProtobufWkt::Timestamp ts1, ts2, ts3;
+    ts1.set_seconds(1234567890);
+    ts1.set_nanos(123456789);
+    ts2.set_seconds(1234567890);
+    ts2.set_nanos(123456789);
+    ts3.set_seconds(1234567890);
+    ts3.set_nanos(987654321);
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(ts1), HashCachedMessageUtil::hash(ts2));
+    EXPECT_NE(HashCachedMessageUtil::hash(ts1), HashCachedMessageUtil::hash(ts3));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(ts1));
+
+    // Duration
+    ProtobufWkt::Duration dur1, dur2, dur3;
+    dur1.set_seconds(3600);
+    dur1.set_nanos(500000000);
+    dur2.set_seconds(3600);
+    dur2.set_nanos(500000000);
+    dur3.set_seconds(7200);
+    dur3.set_nanos(500000000);
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(dur1), HashCachedMessageUtil::hash(dur2));
+    EXPECT_NE(HashCachedMessageUtil::hash(dur1), HashCachedMessageUtil::hash(dur3));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(dur1));
+  }
+
+  // Test 7: Empty vs non-empty messages
+  {
+    ProtobufWkt::StringValue empty_str, non_empty_str;
+    TestUtility::loadFromJson("\"\"", empty_str);
+    TestUtility::loadFromJson("\"non-empty\"", non_empty_str);
+
+    EXPECT_NE(HashCachedMessageUtil::hash(empty_str), HashCachedMessageUtil::hash(non_empty_str));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(empty_str));
+    EXPECT_NE(0, HashCachedMessageUtil::hash(non_empty_str));
+
+    // Empty Struct
+    ProtobufWkt::Struct empty_struct;
+    EXPECT_NE(0, HashCachedMessageUtil::hash(empty_struct));
+    EXPECT_NE(HashCachedMessageUtil::hash(empty_struct), HashCachedMessageUtil::hash(empty_str));
+  }
+
+  // Test 8: Hash consistency across multiple calls
+  {
+    ProtobufWkt::StringValue test_str;
+    TestUtility::loadFromJson("\"consistency test\"", test_str);
+
+    uint64_t hash1 = HashCachedMessageUtil::hash(test_str);
+    uint64_t hash2 = HashCachedMessageUtil::hash(test_str);
+    uint64_t hash3 = HashCachedMessageUtil::hash(test_str);
+
+    EXPECT_EQ(hash1, hash2);
+    EXPECT_EQ(hash2, hash3);
+    EXPECT_EQ(hash1, hash3);
+    EXPECT_NE(0, hash1);
+  }
+
+  // Test 9: Large messages
+  {
+    // Create a large struct with many fields
+    ProtobufWkt::Struct large_struct;
+    for (int i = 0; i < 100; ++i) {
+      std::string field_name = "field_" + std::to_string(i);
+      std::string field_value = "value_" + std::to_string(i);
+      (*large_struct.mutable_fields())[field_name].set_string_value(field_value);
+    }
+
+    EXPECT_NE(0, HashCachedMessageUtil::hash(large_struct));
+
+    // Create identical large struct
+    ProtobufWkt::Struct large_struct2;
+    for (int i = 0; i < 100; ++i) {
+      std::string field_name = "field_" + std::to_string(i);
+      std::string field_value = "value_" + std::to_string(i);
+      (*large_struct2.mutable_fields())[field_name].set_string_value(field_value);
+    }
+
+    EXPECT_EQ(HashCachedMessageUtil::hash(large_struct),
+              HashCachedMessageUtil::hash(large_struct2));
+  }
+
+  // Test 10: Edge cases
+  {
+    // Very long string
+    std::string long_string(10000, 'a');
+    ProtobufWkt::StringValue long_str;
+    long_str.set_value(long_string);
+
+    EXPECT_NE(0, HashCachedMessageUtil::hash(long_str));
+
+    // String with special characters
+    ProtobufWkt::StringValue special_str;
+    special_str.set_value("!@#$%^&*()_+-=[]{}|;':\",./<>?");
+
+    EXPECT_NE(0, HashCachedMessageUtil::hash(special_str));
+    EXPECT_NE(HashCachedMessageUtil::hash(long_str), HashCachedMessageUtil::hash(special_str));
+
+    // Unicode string
+    ProtobufWkt::StringValue unicode_str;
+    unicode_str.set_value("Hello 世界 🌍");
+
+    EXPECT_NE(0, HashCachedMessageUtil::hash(unicode_str));
+    EXPECT_NE(HashCachedMessageUtil::hash(unicode_str), HashCachedMessageUtil::hash(special_str));
+  }
+}
+
+TEST_F(ProtobufUtilityTest, MessageUtilRecursiveHashComplex) {
+  // Test recursive hashing with deeply nested structures
+
+  // Create a complex nested structure
+  ProtobufWkt::Struct root_struct;
+
+  // Level 1: Basic fields
+  (*root_struct.mutable_fields())["name"].set_string_value("root");
+  (*root_struct.mutable_fields())["id"].set_number_value(1);
+
+  // Level 2: Nested struct
+  ProtobufWkt::Struct* nested1 = (*root_struct.mutable_fields())["nested"].mutable_struct_value();
+  (*nested1->mutable_fields())["level"].set_string_value("level2");
+  (*nested1->mutable_fields())["count"].set_number_value(2);
+
+  // Level 3: Another nested struct
+  ProtobufWkt::Struct* nested2 = (*nested1->mutable_fields())["deeper"].mutable_struct_value();
+  (*nested2->mutable_fields())["level"].set_string_value("level3");
+  (*nested2->mutable_fields())["final"].set_bool_value(true);
+
+  // Level 4: List in nested struct
+  ProtobufWkt::ListValue* list = (*nested2->mutable_fields())["items"].mutable_list_value();
+  list->add_values()->set_string_value("item1");
+  list->add_values()->set_string_value("item2");
+  list->add_values()->set_number_value(42);
+
+  // Create identical structure
+  ProtobufWkt::Struct root_struct2;
+  (*root_struct2.mutable_fields())["name"].set_string_value("root");
+  (*root_struct2.mutable_fields())["id"].set_number_value(1);
+
+  ProtobufWkt::Struct* nested1_2 =
+      (*root_struct2.mutable_fields())["nested"].mutable_struct_value();
+  (*nested1_2->mutable_fields())["level"].set_string_value("level2");
+  (*nested1_2->mutable_fields())["count"].set_number_value(2);
+
+  ProtobufWkt::Struct* nested2_2 = (*nested1_2->mutable_fields())["deeper"].mutable_struct_value();
+  (*nested2_2->mutable_fields())["level"].set_string_value("level3");
+  (*nested2_2->mutable_fields())["final"].set_bool_value(true);
+
+  ProtobufWkt::ListValue* list2 = (*nested2_2->mutable_fields())["items"].mutable_list_value();
+  list2->add_values()->set_string_value("item1");
+  list2->add_values()->set_string_value("item2");
+  list2->add_values()->set_number_value(42);
+
+  // Test that identical nested structures produce same hash
+  EXPECT_EQ(HashCachedMessageUtil::hash(root_struct), HashCachedMessageUtil::hash(root_struct2));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(root_struct));
+
+  // Test that modifying any level changes the hash
+  ProtobufWkt::Struct modified_struct = root_struct;
+  (*modified_struct.mutable_fields())["name"].set_string_value("modified");
+
+  EXPECT_NE(HashCachedMessageUtil::hash(root_struct), HashCachedMessageUtil::hash(modified_struct));
+
+  // Test modifying nested level
+  ProtobufWkt::Struct modified_nested = root_struct;
+  ProtobufWkt::Struct* nested_mod =
+      (*modified_nested.mutable_fields())["nested"].mutable_struct_value();
+  (*nested_mod->mutable_fields())["level"].set_string_value("modified_level2");
+
+  EXPECT_NE(HashCachedMessageUtil::hash(root_struct), HashCachedMessageUtil::hash(modified_nested));
+
+  // Test modifying deepest level
+  ProtobufWkt::Struct modified_deep = root_struct;
+  ProtobufWkt::Struct* nested_deep =
+      (*modified_deep.mutable_fields())["nested"].mutable_struct_value();
+  ProtobufWkt::Struct* deeper_deep =
+      (*nested_deep->mutable_fields())["deeper"].mutable_struct_value();
+  (*deeper_deep->mutable_fields())["final"].set_bool_value(false);
+
+  EXPECT_NE(HashCachedMessageUtil::hash(root_struct), HashCachedMessageUtil::hash(modified_deep));
+}
+
+TEST_F(ProtobufUtilityTest, MessageUtilHashFieldTypes) {
+  // Test all field types supported by Protobuf
+
+  // String fields
+  ProtobufWkt::StringValue str_msg;
+  str_msg.set_value("test string");
+  EXPECT_NE(0, HashCachedMessageUtil::hash(str_msg));
+
+  // Integer fields
+  ProtobufWkt::Int32Value int32_msg;
+  int32_msg.set_value(-42);
+  EXPECT_NE(0, HashCachedMessageUtil::hash(int32_msg));
+
+  ProtobufWkt::UInt32Value uint32_msg;
+  uint32_msg.set_value(42);
+  EXPECT_NE(0, HashCachedMessageUtil::hash(uint32_msg));
+
+  ProtobufWkt::Int64Value int64_msg;
+  int64_msg.set_value(-1234567890123456789LL);
+  EXPECT_NE(0, HashCachedMessageUtil::hash(int64_msg));
+
+  ProtobufWkt::UInt64Value uint64_msg;
+  uint64_msg.set_value(1234567890123456789ULL);
+  EXPECT_NE(0, HashCachedMessageUtil::hash(uint64_msg));
+
+  // Floating point fields
+  ProtobufWkt::FloatValue float_msg;
+  float_msg.set_value(3.14159f);
+  EXPECT_NE(0, HashCachedMessageUtil::hash(float_msg));
+
+  ProtobufWkt::DoubleValue double_msg;
+  double_msg.set_value(2.718281828459045);
+  EXPECT_NE(0, HashCachedMessageUtil::hash(double_msg));
+
+  // Boolean fields
+  ProtobufWkt::BoolValue bool_msg;
+  bool_msg.set_value(true);
+  EXPECT_NE(0, HashCachedMessageUtil::hash(bool_msg));
+
+  // Enum fields (using well-known types)
+  // Note: NullValue is not a Message, so we can't hash it directly
+  // Instead test with a Struct containing null value
+  ProtobufWkt::Struct null_struct;
+  (*null_struct.mutable_fields())["null_field"].set_null_value(ProtobufWkt::NullValue::NULL_VALUE);
+  EXPECT_NE(0, HashCachedMessageUtil::hash(null_struct));
+
+  // Test that different types produce different hashes
+  std::vector<uint64_t> hashes = {
+      HashCachedMessageUtil::hash(str_msg),    HashCachedMessageUtil::hash(int32_msg),
+      HashCachedMessageUtil::hash(uint32_msg), HashCachedMessageUtil::hash(int64_msg),
+      HashCachedMessageUtil::hash(uint64_msg), HashCachedMessageUtil::hash(float_msg),
+      HashCachedMessageUtil::hash(double_msg), HashCachedMessageUtil::hash(bool_msg),
+      HashCachedMessageUtil::hash(null_struct)};
+
+  // All hashes should be different (very unlikely to have collisions)
+  for (size_t i = 0; i < hashes.size(); ++i) {
+    for (size_t j = i + 1; j < hashes.size(); ++j) {
+      EXPECT_NE(hashes[i], hashes[j]) << "Hash collision between types " << i << " and " << j;
+    }
+  }
+}
+
+TEST_F(ProtobufUtilityTest, MessageUtilRecursiveHashEdgeCases) {
+  // Test edge cases for recursive hashing
+
+  // Test 1: Empty messages
+  ProtobufWkt::Struct empty_struct;
+  ProtobufWkt::StringValue empty_string;
+  empty_string.set_value("");
+
+  EXPECT_NE(0, HashCachedMessageUtil::hash(empty_struct));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(empty_string));
+  EXPECT_NE(HashCachedMessageUtil::hash(empty_struct), HashCachedMessageUtil::hash(empty_string));
+
+  // Test 2: Messages with only default values
+  ProtobufWkt::Int32Value default_int;
+  ProtobufWkt::BoolValue default_bool;
+  ProtobufWkt::StringValue default_string;
+
+  EXPECT_NE(0, HashCachedMessageUtil::hash(default_int));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(default_bool));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(default_string));
+
+  // Test 3: Messages with zero values
+  ProtobufWkt::Int32Value zero_int;
+  zero_int.set_value(0);
+  ProtobufWkt::UInt64Value zero_uint;
+  zero_uint.set_value(0);
+  ProtobufWkt::DoubleValue zero_double;
+  zero_double.set_value(0.0);
+
+  EXPECT_NE(0, HashCachedMessageUtil::hash(zero_int));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(zero_uint));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(zero_double));
+
+  // Test 4: Messages with extreme values
+  ProtobufWkt::Int64Value max_int64;
+  max_int64.set_value(INT64_MAX);
+  ProtobufWkt::Int64Value min_int64;
+  min_int64.set_value(INT64_MIN);
+  ProtobufWkt::UInt64Value max_uint64;
+  max_uint64.set_value(UINT64_MAX);
+
+  EXPECT_NE(0, HashCachedMessageUtil::hash(max_int64));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(min_int64));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(max_uint64));
+
+  // Test 5: Messages with special floating point values
+  ProtobufWkt::DoubleValue inf_double;
+  inf_double.set_value(std::numeric_limits<double>::infinity());
+  ProtobufWkt::DoubleValue neg_inf_double;
+  neg_inf_double.set_value(-std::numeric_limits<double>::infinity());
+  ProtobufWkt::DoubleValue nan_double;
+  nan_double.set_value(std::numeric_limits<double>::quiet_NaN());
+
+  EXPECT_NE(0, HashCachedMessageUtil::hash(inf_double));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(neg_inf_double));
+  EXPECT_NE(0, HashCachedMessageUtil::hash(nan_double));
+
+  // Test 6: Messages with very long strings
+  std::string very_long_string(100000, 'x');
+  ProtobufWkt::StringValue long_str;
+  long_str.set_value(very_long_string);
+
+  EXPECT_NE(0, HashCachedMessageUtil::hash(long_str));
+
+  // Test 7: Messages with binary data
+  std::string binary_data;
+  for (int i = 0; i < 256; ++i) {
+    binary_data.push_back(static_cast<char>(i));
+  }
+  ProtobufWkt::BytesValue binary_msg;
+  // Use Base64::encode with correct parameters
+  std::string encoded_data = Base64::encode(binary_data.data(), binary_data.length());
+  TestUtility::loadFromJson("\"" + encoded_data + "\"", binary_msg);
+
+  EXPECT_NE(0, HashCachedMessageUtil::hash(binary_msg));
+
+  // Test 8: Messages with mixed content types
+  ProtobufWkt::Struct mixed_struct;
+  (*mixed_struct.mutable_fields())["string"].set_string_value("mixed");
+  (*mixed_struct.mutable_fields())["number"].set_number_value(42.5);
+  (*mixed_struct.mutable_fields())["boolean"].set_bool_value(true);
+  (*mixed_struct.mutable_fields())["null"].set_null_value(ProtobufWkt::NullValue::NULL_VALUE);
+
+  EXPECT_NE(0, HashCachedMessageUtil::hash(mixed_struct));
+
+  // Test 9: Circular reference prevention (should not crash)
+  // This tests that the hash function can handle complex structures
+  ProtobufWkt::Struct complex_struct;
+  (*complex_struct.mutable_fields())["self"].mutable_struct_value();
+  // Note: We don't create actual circular references as they would cause issues
+
+  EXPECT_NE(0, HashCachedMessageUtil::hash(complex_struct));
+}
+
+TEST_F(ProtobufUtilityTest, MessageUtilHashCollisionDetection) {
+  // Test for potential hash collisions and hash quality
+
+  // Test 1: Birthday paradox simulation
+  // Create many different messages and check for collisions
+  std::unordered_set<uint64_t> hashes;
+  std::vector<ProtobufWkt::StringValue> messages;
+
+  // Generate 1000 different messages
+  for (int i = 0; i < 1000; ++i) {
+    ProtobufWkt::StringValue msg;
+    msg.set_value("unique_message_" + std::to_string(i) + "_" + std::to_string(i * 12345));
+    messages.push_back(msg);
+
+    uint64_t hash = HashCachedMessageUtil::hash(msg);
+    hashes.insert(hash);
+  }
+
+  // Check collision rate (should be very low for good hash function)
+  double collision_rate = 1.0 - (static_cast<double>(hashes.size()) / messages.size());
+  EXPECT_LT(collision_rate, 0.001); // Expect less than 0.1% collision rate
+
+  // Test 2: Similar input collision detection
+  // Test strings that differ by only one character
+  std::vector<std::string> similar_strings = {
+      "hello world",         "hello world!",        "hello world!!",     "hello world!!!",
+      "hello world!!!!",     "hello world!!!!!",    "hello world!!!!!!", "hello world!!!!!!!",
+      "hello world!!!!!!!!", "hello world!!!!!!!!!"};
+
+  std::unordered_set<uint64_t> similar_hashes;
+  for (const auto& str : similar_strings) {
+    ProtobufWkt::StringValue msg;
+    msg.set_value(str);
+    similar_hashes.insert(HashCachedMessageUtil::hash(msg));
+  }
+
+  // Similar strings should produce different hashes
+  EXPECT_EQ(similar_hashes.size(), similar_strings.size());
+
+  // Test 3: Numeric proximity collision detection
+  // Test numbers that are very close to each other
+  std::vector<double> close_numbers = {1.0,       1.0000001, 1.0000002, 1.0000003, 1.0000004,
+                                       1.0000005, 1.0000006, 1.0000007, 1.0000008, 1.0000009};
+
+  std::unordered_set<uint64_t> numeric_hashes;
+  for (double num : close_numbers) {
+    ProtobufWkt::DoubleValue msg;
+    msg.set_value(num);
+    numeric_hashes.insert(HashCachedMessageUtil::hash(msg));
+  }
+
+  // Close numbers should produce different hashes
+  EXPECT_EQ(numeric_hashes.size(), close_numbers.size());
+
+  // Test 4: Structure similarity collision detection
+  // Test structs with similar field names but different values
+  std::vector<ProtobufWkt::Struct> similar_structs;
+
+  for (int i = 0; i < 10; ++i) {
+    ProtobufWkt::Struct msg;
+    (*msg.mutable_fields())["field_a"].set_string_value("value_" + std::to_string(i));
+    (*msg.mutable_fields())["field_b"].set_number_value(i);
+    (*msg.mutable_fields())["field_c"].set_bool_value(i % 2 == 0);
+    similar_structs.push_back(msg);
+  }
+
+  std::unordered_set<uint64_t> struct_hashes;
+  for (const auto& msg : similar_structs) {
+    struct_hashes.insert(HashCachedMessageUtil::hash(msg));
+  }
+
+  // Similar structures should produce different hashes
+  EXPECT_EQ(struct_hashes.size(), similar_structs.size());
+
+  // Test 5: Hash avalanche effect
+  // Small changes should produce significantly different hashes
+
+  // Test single character changes
+  std::vector<std::string> avalanche_tests = {
+      "base message for avalanche test",  // Original
+      "base message for avalanche test!", // Add exclamation
+      "base message for avalanche test?", // Change to question
+      "base message for avalanche test.", // Change to period
+      "base message for avalanche testx", // Change last character
+      "xbase message for avalanche test", // Change first character
+      "base message for avalanche test ", // Add space at end
+      " base message for avalanche test", // Add space at beginning
+      "Base message for avalanche test",  // Capitalize first letter
+      "base Message for avalanche test"   // Capitalize middle word
+  };
+
+  std::unordered_set<uint64_t> avalanche_hashes;
+  for (const auto& str : avalanche_tests) {
+    ProtobufWkt::StringValue msg;
+    msg.set_value(str);
+    avalanche_hashes.insert(HashCachedMessageUtil::hash(msg));
+  }
+
+  // All avalanche tests should produce different hashes
+  EXPECT_EQ(avalanche_hashes.size(), avalanche_tests.size());
+
+  // Test 6: Hash distribution quality
+  // Check that hashes are well distributed across the hash space
+  std::vector<uint64_t> all_hashes;
+  all_hashes.insert(all_hashes.end(), hashes.begin(), hashes.end());
+  all_hashes.insert(all_hashes.end(), similar_hashes.begin(), similar_hashes.end());
+  all_hashes.insert(all_hashes.end(), numeric_hashes.begin(), numeric_hashes.end());
+  all_hashes.insert(all_hashes.end(), struct_hashes.begin(), struct_hashes.end());
+  all_hashes.insert(all_hashes.end(), avalanche_hashes.begin(), avalanche_hashes.end());
+
+  // Calculate hash distribution statistics
+  if (all_hashes.size() > 1) {
+    uint64_t min_hash = *std::min_element(all_hashes.begin(), all_hashes.end());
+    uint64_t max_hash = *std::max_element(all_hashes.begin(), all_hashes.end());
+    uint64_t hash_range = max_hash - min_hash;
+
+    // Hash range should be substantial (not all hashes clustered together)
+    EXPECT_GT(hash_range, UINT64_MAX / 100); // Should use at least 1% of hash space
+  }
+
+  // Test 7: Deterministic hash behavior
+  // Same input should always produce same hash
+  ProtobufWkt::StringValue test_msg;
+  test_msg.set_value("deterministic test message");
+
+  uint64_t hash1 = HashCachedMessageUtil::hash(test_msg);
+  uint64_t hash2 = HashCachedMessageUtil::hash(test_msg);
+  uint64_t hash3 = HashCachedMessageUtil::hash(test_msg);
+
+  EXPECT_EQ(hash1, hash2);
+  EXPECT_EQ(hash2, hash3);
+  EXPECT_EQ(hash1, hash3);
+
+  // Test 8: Hash uniqueness across different types
+  // Different message types should produce different hashes
+  ProtobufWkt::StringValue str_msg;
+  str_msg.set_value("test");
+
+  ProtobufWkt::Int32Value int_msg;
+  int_msg.set_value(42);
+
+  ProtobufWkt::BoolValue bool_msg;
+  bool_msg.set_value(true);
+
+  uint64_t str_hash = HashCachedMessageUtil::hash(str_msg);
+  uint64_t int_hash = HashCachedMessageUtil::hash(int_msg);
+  uint64_t bool_hash = HashCachedMessageUtil::hash(bool_msg);
+
+  // All should be different
+  EXPECT_NE(str_hash, int_hash);
+  EXPECT_NE(int_hash, bool_hash);
+  EXPECT_NE(str_hash, bool_hash);
+}
+#endif // HIGRESS
+
 TEST_F(ProtobufUtilityTest, MessageUtilHash) {
   ProtobufWkt::Struct s;
   (*s.mutable_fields())["ab"].set_string_value("fgh");
@@ -185,8 +1010,12 @@ TEST_F(ProtobufUtilityTest, MessageUtilHash) {
   ProtobufWkt::Any a3 = a1;
   a3.set_value(Base64::decode("CgsKAmFiEgUaA2ZnaAoLCgNjZGUSBBoCaWo="));
 
+#if defined(HIGRESS) && defined(ENVOY_ENABLE_FULL_PROTOS)
+  // the message hash skip the any type parse, it cause unordered map in any to be different
+#else
   EXPECT_EQ(MessageUtil::hash(a1), MessageUtil::hash(a2));
   EXPECT_EQ(MessageUtil::hash(a2), MessageUtil::hash(a3));
+#endif
   EXPECT_NE(0, MessageUtil::hash(a1));
   EXPECT_NE(MessageUtil::hash(s), MessageUtil::hash(a1));
 }

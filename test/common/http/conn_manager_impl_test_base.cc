@@ -19,7 +19,7 @@ HttpConnectionManagerImplMixin::HttpConnectionManagerImplMixin()
           Filesystem::FilePathAndType{Filesystem::DestinationType::File, access_log_path_}, {},
           Formatter::SubstitutionFormatUtils::defaultSubstitutionFormatter(), log_manager_)}},
       codec_(new NiceMock<MockServerConnection>()),
-#if defined(ALIMESH)
+#if defined(HIGRESS)
       stats_({ALL_HTTP_CONN_MAN_STATS(POOL_COUNTER(*fake_stats_.rootScope()),
                                       POOL_GAUGE(*fake_stats_.rootScope()),
                                       POOL_HISTOGRAM(*fake_stats_.rootScope()))

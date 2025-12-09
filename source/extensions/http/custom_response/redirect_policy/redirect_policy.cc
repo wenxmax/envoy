@@ -280,6 +280,7 @@ std::unique_ptr<ModifyRequestHeadersAction> RedirectPolicy::createModifyRequestH
     downstream_headers->setPath(path_and_query);
 #if defined(HIGRESS)
   }
+  auto original_upstream_cluster = encoder_callbacks->streamInfo().upstreamClusterInfo();
 #endif
   if (decoder_callbacks->downstreamCallbacks()) {
     decoder_callbacks->downstreamCallbacks()->clearRouteCache();
@@ -307,9 +308,15 @@ std::unique_ptr<ModifyRequestHeadersAction> RedirectPolicy::createModifyRequestH
   // Cache the original response code.
   absl::optional<::Envoy::Http::Code> original_response_code;
 #if defined(HIGRESS)
+  if (original_upstream_cluster.has_value()) {
+    encoder_callbacks->streamInfo().setUpstreamClusterInfo(*original_upstream_cluster);
+  }
+  absl::optional<uint64_t> current_code =
+      ::Envoy::Http::Utility::getResponseStatusOrNullopt(headers);
+  if (current_code.has_value()) {
+    encoder_callbacks->streamInfo().setResponseCode(static_cast<uint32_t>(*current_code));
+  }
   if (keep_original_response_code_) {
-    absl::optional<uint64_t> current_code =
-        ::Envoy::Http::Utility::getResponseStatusOrNullopt(headers);
     if (current_code.has_value()) {
       original_response_code = static_cast<::Envoy::Http::Code>(*current_code);
     }

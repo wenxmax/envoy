@@ -85,7 +85,7 @@ WasmEvent failStateToWasmEvent(FailState state) {
   PANIC("corrupt enum");
 }
 
-const int MIN_RECOVER_INTERVAL_SECONDS = 5;
+const int MIN_RECOVER_INTERVAL_SECONDS = 1;
 #endif
 
 } // namespace
@@ -195,7 +195,7 @@ Wasm::~Wasm() {
 }
 
 #if defined(HIGRESS)
-bool PluginHandleSharedPtrThreadLocal::recover() {
+bool PluginHandleSharedPtrThreadLocal::rebuild(bool is_fail_recovery) {
   if (handle_ == nullptr || handle_->wasmHandle() == nullptr ||
       handle_->wasmHandle()->wasm() == nullptr) {
     ENVOY_LOG(warn, "wasm has not been initialized");
@@ -204,16 +204,22 @@ bool PluginHandleSharedPtrThreadLocal::recover() {
   auto& dispatcher = handle_->wasmHandle()->wasm()->dispatcher();
   auto now = dispatcher.timeSource().monotonicTime() + cache_time_offset_for_testing;
   if (now - last_recover_time_ < std::chrono::seconds(MIN_RECOVER_INTERVAL_SECONDS)) {
-    ENVOY_LOG(debug, "recover interval has not been reached");
+    ENVOY_LOG(info, "rebuild interval has not been reached");
     return false;
   }
-  // Even if recovery fails, it will be retried after the interval
+  // Even if rebuild fails, it will be retried after the interval
   last_recover_time_ = now;
   std::shared_ptr<PluginHandleBase> new_handle;
-  if (handle_->doRecover(new_handle)) {
+  if (handle_->rebuild(new_handle)) {
     handle_ = std::static_pointer_cast<PluginHandle>(new_handle);
-    handle_->wasmHandle()->wasm()->lifecycleStats().recover_total_.inc();
-    ENVOY_LOG(info, "wasm vm recover from crash success");
+    // Increment appropriate metrics based on rebuild type
+    if (is_fail_recovery) {
+      handle_->wasmHandle()->wasm()->lifecycleStats().recover_total_.inc();
+      ENVOY_LOG(info, "wasm vm recover from crash success");
+    } else {
+      handle_->wasmHandle()->wasm()->lifecycleStats().rebuild_total_.inc();
+      ENVOY_LOG(info, "wasm vm rebuild success");
+    }
     return true;
   }
   return false;

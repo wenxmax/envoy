@@ -53,9 +53,16 @@ class FuzzConfig : public ConnectionManagerConfig {
 public:
   FuzzConfig(envoy::extensions::filters::network::http_connection_manager::v3::
                  HttpConnectionManager::ForwardClientCertDetails forward_client_cert)
-      : stats_({ALL_HTTP_CONN_MAN_STATS(POOL_COUNTER(*fake_stats_.rootScope()),
-                                        POOL_GAUGE(fake_stats_),
-                                        POOL_HISTOGRAM(*fake_stats_.rootScope()))},
+      : stats_({ConnectionManagerNamedStats{
+                   ALL_HTTP_CONN_MAN_STATS(POOL_COUNTER(*fake_stats_.rootScope()),
+                                           POOL_GAUGE(fake_stats_),
+                                           POOL_HISTOGRAM(*fake_stats_.rootScope()))
+#if defined(HIGRESS)
+                       HIGRESS_EXT_HTTP_CONN_MAN_STATS(POOL_COUNTER(*fake_stats_.rootScope()),
+                                                       POOL_GAUGE(fake_stats_),
+                                                       POOL_HISTOGRAM(*fake_stats_.rootScope()))
+#endif
+               }},
                "", *fake_stats_.rootScope()),
         tracing_stats_{CONN_MAN_TRACING_STATS(POOL_COUNTER(fake_stats_))},
         listener_stats_{CONN_MAN_LISTENER_STATS(POOL_COUNTER(fake_stats_))},

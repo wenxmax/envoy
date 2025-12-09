@@ -76,6 +76,9 @@ void GrpcSubscriptionImpl::onConfigUpdate(const std::vector<Config::DecodedResou
   std::chrono::milliseconds update_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       dispatcher_.timeSource().monotonicTime() - start);
   stats_.update_success_.inc();
+#ifdef ALIMESH
+  stats_.last_update_success_.set(true);
+#endif
   stats_.update_attempt_.inc();
   stats_.update_time_.set(DateUtil::nowToMilliseconds(dispatcher_.timeSource()));
   stats_.version_.set(HashUtil::xxHash64(version_info));
@@ -101,6 +104,9 @@ void GrpcSubscriptionImpl::onConfigUpdate(
   std::chrono::milliseconds update_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       dispatcher_.timeSource().monotonicTime() - start);
   stats_.update_success_.inc();
+#ifdef ALIMESH
+  stats_.last_update_success_.set(true);
+#endif
   stats_.update_time_.set(DateUtil::nowToMilliseconds(dispatcher_.timeSource()));
   stats_.version_.set(HashUtil::xxHash64(system_version_info));
   stats_.version_text_.set(system_version_info);
@@ -112,10 +118,16 @@ void GrpcSubscriptionImpl::onConfigUpdateFailed(ConfigUpdateFailureReason reason
   switch (reason) {
   case Envoy::Config::ConfigUpdateFailureReason::ConnectionFailure:
     stats_.update_failure_.inc();
+#ifdef ALIMESH
+    stats_.last_update_success_.set(false);
+#endif
     ENVOY_LOG(debug, "gRPC update for {} failed", type_url_);
     break;
   case Envoy::Config::ConfigUpdateFailureReason::FetchTimedout:
     stats_.init_fetch_timeout_.inc();
+#ifdef ALIMESH
+    stats_.last_update_success_.set(false);
+#endif
     disableInitFetchTimeoutTimer();
     ENVOY_LOG(warn, "gRPC config: initial fetch timed out for {}", type_url_);
     callbacks_.onConfigUpdateFailed(reason, e);
@@ -125,6 +137,9 @@ void GrpcSubscriptionImpl::onConfigUpdateFailed(ConfigUpdateFailureReason reason
     ASSERT(e != nullptr);
     disableInitFetchTimeoutTimer();
     stats_.update_rejected_.inc();
+#ifdef ALIMESH
+    stats_.last_update_success_.set(false);
+#endif
     ENVOY_LOG(warn, "gRPC config for {} rejected: {}", type_url_, e->what());
     callbacks_.onConfigUpdateFailed(reason, e);
     break;

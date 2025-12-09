@@ -80,7 +80,7 @@ bool requestWasConnect(const RequestHeaderMapSharedPtr& headers, Protocol protoc
 ConnectionManagerStats ConnectionManagerImpl::generateStats(const std::string& prefix,
                                                             Stats::Scope& scope) {
   return ConnectionManagerStats(
-#if defined(ALIMESH)
+#if defined(HIGRESS)
       {ALL_HTTP_CONN_MAN_STATS(POOL_COUNTER_PREFIX(scope, prefix), POOL_GAUGE_PREFIX(scope, prefix),
                                POOL_HISTOGRAM_PREFIX(scope, prefix))
            HIGRESS_EXT_HTTP_CONN_MAN_STATS(POOL_COUNTER_PREFIX(scope, prefix),
@@ -2228,6 +2228,8 @@ void ConnectionManagerImpl::ActiveStream::recreateStream(
   // Prevent the stream from being used through the commonContinue process of
   // ActiveStreamDecoderFilter or ActiveStreamEncoderFilter.
   filter_manager_.interruptContinue();
+  const auto& original_remote_address =
+      filter_manager_.streamInfo().downstreamAddressProvider().remoteAddress();
 #else
   const auto& buffered_request_data = filter_manager_.bufferedRequestData();
   const bool proxy_body = buffered_request_data != nullptr && buffered_request_data->length() > 0;
@@ -2245,6 +2247,11 @@ void ConnectionManagerImpl::ActiveStream::recreateStream(
   connection_manager_.doEndStream(*this, /*check_for_deferred_close*/ false);
 
   RequestDecoder& new_stream = connection_manager_.newStream(*response_encoder, true);
+
+#if defined(HIGRESS)
+  auto& active_stream = static_cast<ActiveStream&>(new_stream);
+  active_stream.filter_manager_.setDownstreamRemoteAddress(original_remote_address);
+#endif
 
   // Set the new RequestDecoder on the ResponseEncoder. Even though all of the decoder callbacks
   // have already been called at this point, the encoder still needs the new decoder for deferred

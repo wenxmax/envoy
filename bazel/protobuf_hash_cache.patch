@@ -1,0 +1,462 @@
+diff --git a/src/google/protobuf/BUILD.bazel b/src/google/protobuf/BUILD.bazel
+index 77ed2309f..825189ca5 100644
+--- a/src/google/protobuf/BUILD.bazel
++++ b/src/google/protobuf/BUILD.bazel
+@@ -504,6 +504,7 @@ cc_library(
+         "@com_google_absl//absl/synchronization",
+         "@com_google_absl//absl/time",
+         "@utf8_range//:utf8_validity",
++        "@com_github_cyan4973_xxhash//:xxhash",
+     ],
+ )
+ 
+diff --git a/src/google/protobuf/message.cc b/src/google/protobuf/message.cc
+index fc474dd7c..4db68a09d 100644
+--- a/src/google/protobuf/message.cc
++++ b/src/google/protobuf/message.cc
+@@ -34,6 +34,7 @@
+ 
+ #include "google/protobuf/message.h"
+ 
++#include <cstdio>
+ #include <iostream>
+ #include <stack>
+ 
+@@ -60,7 +61,8 @@
+ #include "google/protobuf/unknown_field_set.h"
+ #include "google/protobuf/wire_format.h"
+ #include "google/protobuf/wire_format_lite.h"
+-
++#include "google/protobuf/dynamic_message.h"
++#include "xxhash.h"
+ 
+ // Must be included last.
+ #include "google/protobuf/port_def.inc"
+@@ -74,6 +76,93 @@ namespace internal {
+ // defined in generated_message_reflection.cc
+ void RegisterFileLevelMetadata(const DescriptorTable* descriptor_table);
+ 
++// Helper function to extract type name from Any type_url
++std::string ExtractTypeNameFromUrl(const std::string& type_url) {
++  size_t last_slash = type_url.find_last_of('/');
++  if (last_slash != std::string::npos && last_slash + 1 < type_url.length()) {
++    return type_url.substr(last_slash + 1);
++  }
++  return type_url; // Fallback to full URL if parsing fails
++}
++
++// Helper function to check if map value is message type
++bool IsMapValueMessageTyped(const FieldDescriptor* map_field) {
++  return map_field->message_type()->field(1)->cpp_type() ==
++         FieldDescriptor::CPPTYPE_MESSAGE;
++}
++
++// Helper function to hash a single field value
++uint64_t HashFieldValue(const Reflection* reflection, const Message& message, 
++                       const FieldDescriptor* field, int index = -1) {
++  switch (field->cpp_type()) {
++    case FieldDescriptor::CPPTYPE_MESSAGE:
++      if (index >= 0) {
++        const Message& sub_message = reflection->GetRepeatedMessage(message, field, index);
++        return sub_message.GetCachedHashValue();
++      } else if (reflection->HasField(message, field)) {
++        const Message& sub_message = reflection->GetMessage(message, field);
++        return sub_message.GetCachedHashValue();
++      }
++      return 0;
++    case FieldDescriptor::CPPTYPE_INT32:{
++      int32_t val = index >= 0 ? reflection->GetRepeatedInt32(message, field, index)
++                       : reflection->GetInt32(message, field);
++      return XXH64(&val, sizeof(val), 0);
++    }
++    case FieldDescriptor::CPPTYPE_INT64:{
++      int64_t val = index >= 0 ? reflection->GetRepeatedInt64(message, field, index)
++                       : reflection->GetInt64(message, field);
++      return XXH64(&val, sizeof(val), 0);
++    }
++    case FieldDescriptor::CPPTYPE_UINT32:{
++      uint32_t val = index >= 0 ? reflection->GetRepeatedUInt32(message, field, index)
++                       : reflection->GetUInt32(message, field);
++      return XXH64(&val, sizeof(val), 0);
++    }
++    case FieldDescriptor::CPPTYPE_UINT64:{
++      uint64_t val = index >= 0 ? reflection->GetRepeatedUInt64(message, field, index)
++                       : reflection->GetUInt64(message, field);
++      return XXH64(&val, sizeof(val), 0);
++    }
++    case FieldDescriptor::CPPTYPE_DOUBLE:{
++      double val = index >= 0 ? reflection->GetRepeatedDouble(message, field, index)
++                       : reflection->GetDouble(message, field);
++      return XXH64(&val, sizeof(val), 0);
++    }
++    case FieldDescriptor::CPPTYPE_FLOAT:{
++      float val = index >= 0 ? reflection->GetRepeatedFloat(message, field, index)
++                       : reflection->GetFloat(message, field);
++      return XXH64(&val, sizeof(val), 0);
++    }
++    case FieldDescriptor::CPPTYPE_BOOL:{
++      bool val = index >= 0 ? reflection->GetRepeatedBool(message, field, index)
++                       : reflection->GetBool(message, field);
++      return XXH64(&val, sizeof(val), 0);
++    }
++    case FieldDescriptor::CPPTYPE_ENUM:{
++      int32_t val = index >= 0 ? reflection->GetRepeatedEnumValue(message, field, index)
++                       : reflection->GetEnumValue(message, field);
++      return XXH64(&val, sizeof(val), 0);
++    }
++    case FieldDescriptor::CPPTYPE_STRING:{
++      std::string val = index >= 0 ? reflection->GetRepeatedString(message, field, index)
++                       : reflection->GetString(message, field);
++      return XXH64(val.data(), val.size(), 0);
++    }
++    default:{
++      if(index >= 0){
++        fprintf(stderr, "Message::HashFieldValue: Unexpected repeated field type: %d\n", field->cpp_type());
++        const Message& sub_message = reflection->GetRepeatedMessage(message, field, index);
++        return sub_message.GetCachedHashValue();
++      } else if (reflection->HasField(message, field)){
++        fprintf(stderr, "Message::HashFieldValue: Unexpected field type: %d\n", field->cpp_type());
++        const Message& sub_message = reflection->GetMessage(message, field);
++        return sub_message.GetCachedHashValue();
++      }
++      return 0;
++    }
++  }
++}
+ }  // namespace internal
+ 
+ using internal::DownCast;
+@@ -215,6 +304,296 @@ uint64_t Message::GetInvariantPerBuild(uint64_t salt) {
+   return salt;
+ }
+ 
++// Hash computation methods implementation
++uint64_t Message::ComputeHashValue() const {
++  
++  const Reflection* reflection = GetReflection();
++  const Descriptor* descriptor = GetDescriptor();
++  
++  // Use a stable hash seed that's consistent across runs
++  // This ensures deterministic hashing regardless of memory layout
++  uint64_t hash = 0x9e3779b97f4a7c15; // xxhash seed
++  
++  // Hash the descriptor type
++  hash = XXH64(descriptor->full_name().data(), descriptor->full_name().size(), hash);
++  
++  // Special handling for google.protobuf.Any type
++  if (descriptor->full_name() == "google.protobuf.Any") {
++    // For Any types, we need to hash the unpacked content to ensure consistency
++    // This mimics TextFormat's approach of expanding Any messages
++    const Reflection* reflection = GetReflection();
++    const FieldDescriptor* type_url_field = descriptor->FindFieldByNumber(1);
++    const FieldDescriptor* value_field = descriptor->FindFieldByNumber(2);
++    
++    if (type_url_field && value_field && 
++        reflection->HasField(*this, type_url_field) && 
++        reflection->HasField(*this, value_field)) {
++      
++      std::string type_url = reflection->GetString(*this, type_url_field);
++      std::string serialized_value = reflection->GetString(*this, value_field);
++      
++      // Hash the type URL
++      hash = XXH64(type_url.data(), type_url.size(), hash);
++      /*
++      // Try to parse and hash the unpacked message for consistency
++      // This ensures that Any messages with same content produce same hash
++      // regardless of serialization order in the value field
++      try {
++        // Create a temporary message from the serialized value
++        DynamicMessageFactory factory;
++        const Descriptor* value_descriptor = 
++            factory.GetPrototype(descriptor)->GetDescriptor()->file()->pool()
++                    ->FindMessageTypeByName(internal::ExtractTypeNameFromUrl(type_url));
++        
++        if (value_descriptor) {
++          std::unique_ptr<Message> unpacked_message(
++              factory.GetPrototype(value_descriptor)->New());
++          if (unpacked_message->ParseFromString(serialized_value)) {
++            // Hash the unpacked message content
++            uint64_t unpacked_message_hash = unpacked_message->GetCachedHashValue();
++            hash = XXH64(&unpacked_message_hash, sizeof(unpacked_message_hash), hash);
++          } else {
++            fprintf(stderr, "Message::ComputeHashValue: Parsing failed for Any message: %s\n", serialized_value.c_str());
++            // If parsing fails, hash the raw serialized value
++            hash = XXH64(serialized_value.data(), serialized_value.size(), hash);
++          }
++        } else {
++          fprintf(stderr, "Message::ComputeHashValue: Type not found: %s\n", type_url.c_str());
++          // If type not found, hash the raw serialized value
++          hash = XXH64(serialized_value.data(), serialized_value.size(), hash);
++        }
++      } catch (e) {
++        fprintf(stderr, "Message::ComputeHashValue: Error parsing Any message: %s\n", e.what());
++        // If any error occurs, fall back to hashing the raw value
++        hash = XXH64(serialized_value.data(), serialized_value.size(), hash);
++      }
++      */
++
++      // Skip the any parsing and just hash the serialized value
++      hash = XXH64(serialized_value.data(), serialized_value.size(), hash);
++
++      // Skip normal field processing for Any types since we've handled them specially
++      return hash;
++    }
++  }
++  
++  // Iterate through all fields and hash their values recursively
++  std::vector<const FieldDescriptor*> fields;
++  reflection->ListFields(*this, &fields);
++  
++  // Sort fields by field number to ensure consistent order
++  // Use stable_sort for deterministic ordering across runs
++  std::stable_sort(fields.begin(), fields.end(), 
++                   [](const FieldDescriptor* a, const FieldDescriptor* b) {
++                     if (a->number() != b->number()) {
++                       return a->number() < b->number();  // Primary: field number
++                     }
++                     // Secondary: field name for stability when field numbers are equal
++                     return a->name() < b->name();
++                   });
++  
++  for (const FieldDescriptor* field : fields) {
++    // Hash field number and type
++    uint32_t field_number = field->number();
++    uint32_t field_type = field->type();
++    hash = XXH64(&field_number, sizeof(field_number), hash);
++    hash = XXH64(&field_type, sizeof(field_type), hash);
++    
++    if (field->is_repeated()) {
++      // Handle repeated fields using RepeatedFieldAccessor for consistent access
++      const internal::RepeatedFieldAccessor* accessor = reflection->RepeatedFieldAccessor(field);
++      void* repeated_field_data = reflection->RepeatedFieldData(const_cast<Message*>(this), field,
++                                                               field->cpp_type(), 
++                                                               field->message_type());
++      int size = accessor->Size(repeated_field_data);
++      hash = XXH64(&size, sizeof(size), hash);
++      
++      if (field->is_map()) {
++        // For map fields, use MapField to access the underlying map data
++        // This provides better performance and guarantees consistent ordering
++        
++        // Get key and value field descriptors
++        const Descriptor* map_entry_desc = field->message_type();
++        const FieldDescriptor* key_field = map_entry_desc->field(0);   // key field
++        const FieldDescriptor* value_field = map_entry_desc->field(1); // value field
++        
++        // Check if map value is message type
++        bool is_value_message = internal::IsMapValueMessageTyped(field);
++
++        std::vector<std::pair<uint64_t, uint64_t>> map_entries;
++        
++        // Use MapIterator to iterate through the map
++        for (MapIterator iter = reflection->MapBegin(const_cast<Message*>(this), field);
++             iter != reflection->MapEnd(const_cast<Message*>(this), field);
++             ++iter) {
++          
++          const MapKey& key = iter.GetKey();
++          const MapValueRef& value = iter.GetValueRef();
++          
++          uint64_t key_hash = 0;
++          uint64_t value_hash = 0;
++          
++          // Hash key based on its type
++          switch (key_field->cpp_type()) {
++            case FieldDescriptor::CPPTYPE_STRING: {
++              std::string key_str = key.GetStringValue();
++              key_hash = XXH64(key_str.data(), key_str.size(), 0);
++              break;
++            }
++            case FieldDescriptor::CPPTYPE_INT64: {
++              int64_t key_int = key.GetInt64Value();
++              key_hash = XXH64(&key_int, sizeof(key_int), 0);
++              break;
++            }
++            case FieldDescriptor::CPPTYPE_INT32: {
++              int32_t key_int = key.GetInt32Value();
++              key_hash = XXH64(&key_int, sizeof(key_int), 0);
++              break;
++            }
++            case FieldDescriptor::CPPTYPE_UINT64: {
++              uint64_t key_int = key.GetUInt64Value();
++              key_hash = XXH64(&key_int, sizeof(key_int), 0);
++              break;
++            }
++            case FieldDescriptor::CPPTYPE_UINT32: {
++              uint32_t key_int = key.GetUInt32Value();
++              key_hash = XXH64(&key_int, sizeof(key_int), 0);
++              break;
++            }
++            case FieldDescriptor::CPPTYPE_BOOL: {
++              bool key_bool = key.GetBoolValue();
++              key_hash = XXH64(&key_bool, sizeof(key_bool), 0);
++              break;
++            }
++            default:
++              // Should not reach here for valid map key types
++              fprintf(stderr, "Message::ComputeHashValue: Unexpected map key type: %d\n", key_field->cpp_type());
++              break;
++          }
++          
++          // Hash value based on its type
++          if (is_value_message) {
++            // For message values, use GetCachedHashValue
++            const Message& value_msg = value.GetMessageValue();
++            value_hash = value_msg.GetCachedHashValue();
++          } else {
++            // For primitive values, hash directly
++            switch (value_field->cpp_type()) {
++              case FieldDescriptor::CPPTYPE_STRING: {
++                std::string value_str = value.GetStringValue();
++                value_hash = XXH64(value_str.data(), value_str.size(), 0);
++                break;
++              }
++              case FieldDescriptor::CPPTYPE_INT64: {
++                int64_t value_int = value.GetInt64Value();
++                value_hash = XXH64(&value_int, sizeof(value_int), 0);
++                break;
++              }
++              case FieldDescriptor::CPPTYPE_INT32: {
++                int32_t value_int = value.GetInt32Value();
++                value_hash = XXH64(&value_int, sizeof(value_int), 0);
++                break;
++              }
++              case FieldDescriptor::CPPTYPE_UINT64: {
++                uint64_t value_int = value.GetUInt64Value();
++                value_hash = XXH64(&value_int, sizeof(value_int), 0);
++                break;
++              }
++              case FieldDescriptor::CPPTYPE_UINT32: {
++                uint32_t value_int = value.GetUInt32Value();
++                value_hash = XXH64(&value_int, sizeof(value_int), 0);
++                break;
++              }
++              case FieldDescriptor::CPPTYPE_DOUBLE: {
++                double value_double = value.GetDoubleValue();
++                value_hash = XXH64(&value_double, sizeof(value_double), 0);
++                break;
++              }
++              case FieldDescriptor::CPPTYPE_FLOAT: {
++                float value_float = value.GetFloatValue();
++                value_hash = XXH64(&value_float, sizeof(value_float), 0);
++                break;
++              }
++              case FieldDescriptor::CPPTYPE_BOOL: {
++                bool value_bool = value.GetBoolValue();
++                value_hash = XXH64(&value_bool, sizeof(value_bool), 0);
++                break;
++              }
++              case FieldDescriptor::CPPTYPE_ENUM: {
++                int32_t value_enum = value.GetEnumValue();
++                value_hash = XXH64(&value_enum, sizeof(value_enum), 0);
++                break;
++              }
++              default:
++                // Should not reach here for valid map value types
++                fprintf(stderr, "Message::ComputeHashValue: Unexpected map value type: %d\n", value_field->cpp_type());
++                break;
++            }
++          }
++          
++          map_entries.emplace_back(key_hash, value_hash);
++        }
++        
++        // Sort map entries by key hash for consistent ordering
++        // MapField provides consistent iteration order, but we still sort for extra safety
++        std::stable_sort(map_entries.begin(), map_entries.end(),
++                        [](const auto& a, const auto& b) {
++                          if (a.first != b.first) {
++                            return a.first < b.first;  // Primary: key hash
++                          }
++                          return a.second < b.second;  // Secondary: value hash
++                        });
++        
++        // Hash sorted map entries
++        for (const auto& entry : map_entries) {
++          hash = XXH64(&entry.first, sizeof(entry.first), hash);
++          hash = XXH64(&entry.second, sizeof(entry.second), hash);
++        }
++      } else {
++        // Handle regular repeated fields (non-map) using RepeatedFieldAccessor
++        for (int i = 0; i < size; ++i) {
++          // Use a simplified approach: directly use HashFieldValue with index
++          uint64_t hash_value = internal::HashFieldValue(reflection, *this, field, i);
++          hash = XXH64(&hash_value, sizeof(hash_value), hash);
++        }
++      }
++    } else {
++      // Handle singular fields
++      uint64_t field_value = internal::HashFieldValue(reflection, *this, field);
++      hash = XXH64(&field_value, sizeof(field_value), hash);
++    }
++  }
++  
++  // Hash unknown fields if present
++  if (_internal_metadata_.have_unknown_fields()) {
++    const UnknownFieldSet& unknown_fields = reflection->GetUnknownFields(*this);
++    // Use field count and space used for unknown fields hash
++    uint32_t field_count = unknown_fields.field_count();
++    uint64_t space_used = unknown_fields.SpaceUsedLong();
++    hash = XXH64(&field_count, sizeof(field_count), hash);
++    hash = XXH64(&space_used, sizeof(space_used), hash);
++  }
++  
++  return hash;
++}
++
++uint64_t Message::GetCachedHashValue() const {
++  if (!hash_cached_) {
++    cached_hash_value_ = ComputeHashValue();
++    hash_cached_ = true;
++  }
++  return cached_hash_value_;
++}
++
++bool Message::HasCachedHashValue() const {
++  return hash_cached_;
++}
++
++void Message::SetCachedHashValue(uint64_t hash_value) const {
++  cached_hash_value_ = hash_value;
++  hash_cached_ = true;
++}
++  
+ namespace internal {
+ void* CreateSplitMessageGeneric(Arena* arena, const void* default_split,
+                                 size_t size, const void* message,
+diff --git a/src/google/protobuf/message.h b/src/google/protobuf/message.h
+index 6c5e24f9d..b9078785c 100644
+--- a/src/google/protobuf/message.h
++++ b/src/google/protobuf/message.h
+@@ -362,6 +362,22 @@ class PROTOBUF_EXPORT Message : public MessageLite {
+   uint8_t* _InternalSerialize(uint8_t* target,
+                               io::EpsCopyOutputStream* stream) const override;
+ 
++  // Hash computation methods ----------------------------------------
++  // Optimized hash computation with caching support
++  
++  // Compute hash value for this message using recursive hashing
++  // This avoids serialization and provides better performance
++  uint64_t ComputeHashValue() const;
++  
++  // Get cached hash value if available, otherwise compute and cache it
++  uint64_t GetCachedHashValue() const;
++
++  // Set cached hash value
++  void SetCachedHashValue(uint64_t hash_value) const;
++  
++  // Check if hash value is cached
++  bool HasCachedHashValue() const;
++
+  private:
+   // This is called only by the default implementation of ByteSize(), to
+   // update the cached size.  If you override ByteSize(), you do not need
+@@ -418,6 +434,9 @@ class PROTOBUF_EXPORT Message : public MessageLite {
+   size_t MaybeComputeUnknownFieldsSize(size_t total_size,
+                                        internal::CachedSize* cached_size) const;
+ 
++  // Hash caching support
++  mutable uint64_t cached_hash_value_ = 0;
++  mutable bool hash_cached_ = false;
+ 
+  protected:
+   static uint64_t GetInvariantPerBuild(uint64_t salt);

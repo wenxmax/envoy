@@ -1850,6 +1850,21 @@ TEST_P(WasmHttpFilterTest, GetRouteName) {
   EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter().decodeHeaders(request_headers, false));
   filter().onDestroy();
 }
+TEST_P(WasmHttpFilterTest, GetVMMemorySize) {
+  auto runtime = std::get<0>(GetParam());
+  if (runtime == "null") {
+    return;
+  }
+  if (std::get<1>(GetParam()) != "cpp") {
+    return;
+  }
+  setupTest("", "GetVMMemorySize");
+  setupFilter();
+  EXPECT_CALL(filter(), log_(spdlog::level::info, testing::StartsWith("vm memory size is ")));
+  Http::TestRequestHeaderMapImpl request_headers{};
+  EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter().decodeHeaders(request_headers, false));
+  filter().onDestroy();
+}
 TEST_P(WasmHttpFilterTest, RecoverFromCrash) {
   auto runtime = std::get<0>(GetParam());
   if (runtime == "null") {
@@ -1946,6 +1961,71 @@ TEST_P(WasmHttpFilterTest, RecoverFromCrash) {
   EXPECT_EQ(0U, crash_vm.value());
   EXPECT_EQ(4U, recover_total.value());
   EXPECT_EQ(0U, recover_error.value());
+
+  filter().onDestroy();
+}
+
+TEST_P(WasmHttpFilterTest, ProactiveRebuild) {
+  auto runtime = std::get<0>(GetParam());
+  if (runtime == "null") {
+    return;
+  }
+  if (std::get<1>(GetParam()) != "cpp") {
+    return;
+  }
+  setupTest("", "RebuildTest");
+  setupFilter();
+  EXPECT_CALL(encoder_callbacks_, streamInfo()).WillRepeatedly(ReturnRef(request_stream_info_));
+  auto& rebuild_total = scope_->counterFromString("wasm.envoy.wasm.runtime." + runtime +
+                                                  ".plugin.plugin_name.rebuild_total");
+  auto& recover_total = scope_->counterFromString("wasm.envoy.wasm.runtime." + runtime +
+                                                  ".plugin.plugin_name.recover_total");
+  Http::MockStreamDecoderFilterCallbacks decoder_callbacks;
+  filter().setDecoderFilterCallbacks(decoder_callbacks);
+  EXPECT_EQ(0U, rebuild_total.value());
+  EXPECT_EQ(0U, recover_total.value());
+
+  // First request: normal processing
+  Http::TestRequestHeaderMapImpl request_headers{};
+  EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter().decodeHeaders(request_headers, false));
+  EXPECT_EQ(0U, rebuild_total.value());
+  EXPECT_EQ(0U, recover_total.value());
+
+  // Second request: set rebuild state by sending rebuild header
+  request_headers = Http::TestRequestHeaderMapImpl{{"rebuild", "true"}};
+  EXPECT_CALL(filter(), log_(spdlog::level::info, Eq("Setting rebuild flag")));
+  EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter().decodeHeaders(request_headers, false));
+  EXPECT_EQ(0U, rebuild_total.value()); // No rebuild yet, just set the flag
+  EXPECT_EQ(0U, recover_total.value());
+
+  // Now trigger the actual rebuild using doRebuild()
+  doRebuild<TestFilter>();
+  EXPECT_EQ(1U, rebuild_total.value());
+  EXPECT_EQ(0U, recover_total.value());
+
+  // Verify new instance is working
+  request_headers = {};
+  EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter().decodeHeaders(request_headers, false));
+  EXPECT_EQ(1U, rebuild_total.value());
+  EXPECT_EQ(0U, recover_total.value());
+
+  // Set rebuild state again
+  request_headers = Http::TestRequestHeaderMapImpl{{"rebuild", "true"}};
+  EXPECT_CALL(filter(), log_(spdlog::level::info, Eq("Setting rebuild flag")));
+  EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter().decodeHeaders(request_headers, false));
+  EXPECT_EQ(1U, rebuild_total.value()); // Still 1, just set the flag again
+  EXPECT_EQ(0U, recover_total.value());
+
+  // Trigger second rebuild using doRebuild()
+  doRebuild<TestFilter>();
+  EXPECT_EQ(2U, rebuild_total.value());
+  EXPECT_EQ(0U, recover_total.value());
+
+  // Verify new instance is still working after second rebuild
+  request_headers = {};
+  EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter().decodeHeaders(request_headers, false));
+  EXPECT_EQ(2U, rebuild_total.value());
+  EXPECT_EQ(0U, recover_total.value());
 
   filter().onDestroy();
 }

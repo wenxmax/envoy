@@ -151,8 +151,15 @@ class FilterChainManagerImpl : public Network::FilterChainManager,
                                Logger::Loggable<Logger::Id::config> {
 public:
   using FcContextMap =
+#if defined(HIGRESS) && defined(ENVOY_ENABLE_FULL_PROTOS)
+      absl::flat_hash_map<envoy::config::listener::v3::FilterChain,
+                          Network::DrainableFilterChainSharedPtr, HashCachedMessageUtil,
+                          HashCachedMessageUtil>;
+#else
       absl::flat_hash_map<envoy::config::listener::v3::FilterChain,
                           Network::DrainableFilterChainSharedPtr, MessageUtil, MessageUtil>;
+#endif
+
   FilterChainManagerImpl(const std::vector<Network::Address::InstanceConstSharedPtr>& addresses,
                          Configuration::FactoryContext& factory_context,
                          Init::Manager& init_manager)

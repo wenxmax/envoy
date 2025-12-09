@@ -162,7 +162,7 @@ class PluginHandleSharedPtrThreadLocal : public ThreadLocal::ThreadLocalObject,
                                          public Logger::Loggable<Logger::Id::wasm> {
 public:
   PluginHandleSharedPtrThreadLocal(PluginHandleSharedPtr handle) : handle_(handle){};
-  bool recover();
+  bool rebuild(bool is_fail_recovery = false);
 #else
 class PluginHandleSharedPtrThreadLocal : public ThreadLocal::ThreadLocalObject {
 public:

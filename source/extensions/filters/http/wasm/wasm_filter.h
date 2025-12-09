@@ -48,13 +48,24 @@ public:
       failed = true;
     } else if (wasm->isFailed()) {
       ENVOY_LOG(info, "wasm vm is crashed, try to recover");
-      if (opt_ref->recover()) {
+      if (opt_ref->rebuild(true)) {
         ENVOY_LOG(info, "wasm vm recover success");
         wasm = opt_ref->handle()->wasmHandle()->wasm().get();
         handle = opt_ref->handle();
       } else {
         ENVOY_LOG(info, "wasm vm recover failed");
         failed = true;
+      }
+    } else if (wasm->shouldRebuild()) {
+      ENVOY_LOG(info, "wasm vm requested rebuild, try to rebuild");
+      if (opt_ref->rebuild(false)) {
+        ENVOY_LOG(info, "wasm vm rebuild success");
+        wasm = opt_ref->handle()->wasmHandle()->wasm().get();
+        handle = opt_ref->handle();
+        // Reset rebuild state
+        wasm->setShouldRebuild(false);
+      } else {
+        ENVOY_LOG(info, "wasm vm rebuild failed, still using the stale one");
       }
     }
     if (failed) {

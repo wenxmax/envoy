@@ -211,9 +211,15 @@ void FilterChainManagerImpl::addFilterChains(
     FilterChainFactoryBuilder& filter_chain_factory_builder,
     FilterChainFactoryContextCreator& context_creator) {
   Cleanup cleanup([this]() { origin_ = absl::nullopt; });
+#if defined(HIGRESS) && defined(ENVOY_ENABLE_FULL_PROTOS)
+  absl::node_hash_map<envoy::config::listener::v3::FilterChainMatch, std::string,
+                      HashCachedMessageUtil, HashCachedMessageUtil>
+      filter_chains;
+#else
   absl::node_hash_map<envoy::config::listener::v3::FilterChainMatch, std::string, MessageUtil,
                       MessageUtil>
       filter_chains;
+#endif
   uint32_t new_filter_chain_size = 0;
   FilterChainsByName filter_chains_by_name;
 

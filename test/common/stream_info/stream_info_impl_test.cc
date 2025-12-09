@@ -39,6 +39,13 @@ protected:
   void assertStreamInfoSize(StreamInfoImpl stream_info) {
     ASSERT_TRUE(sizeof(stream_info) == 840 || sizeof(stream_info) == 856 ||
                 sizeof(stream_info) == 888 || sizeof(stream_info) == 776 ||
+#if defined(HIGRESS)
+                sizeof(stream_info) == 816 || sizeof(stream_info) == 768 ||
+
+                // add hash cache to protobuf message
+                // detail: bazel/protobuf_hash_cache.patch
+                sizeof(stream_info) == 784 ||
+#endif
                 sizeof(stream_info) == 728 || sizeof(stream_info) == 744)
         << "If adding fields to StreamInfoImpl, please check to see if you "
            "need to add them to setFromForRecreateStream or setFrom! Current size "

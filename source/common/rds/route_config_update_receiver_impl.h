@@ -13,8 +13,11 @@ class RouteConfigUpdateReceiverImpl : public RouteConfigUpdateReceiver {
 public:
   RouteConfigUpdateReceiverImpl(ConfigTraits& config_traits, ProtoTraits& proto_traits,
                                 Server::Configuration::ServerFactoryContext& factory_context);
-
+#if defined(HIGRESS) && defined(ENVOY_ENABLE_FULL_PROTOS)
+  uint64_t getHash(const Protobuf::Message& rc) const { return HashCachedMessageUtil::hash(rc); }
+#else
   uint64_t getHash(const Protobuf::Message& rc) const { return MessageUtil::hash(rc); }
+#endif
   bool checkHash(uint64_t new_hash) const { return (new_hash != last_config_hash_); }
   void updateHash(uint64_t hash) { last_config_hash_ = hash; }
   void updateConfig(std::unique_ptr<Protobuf::Message>&& route_config_proto);

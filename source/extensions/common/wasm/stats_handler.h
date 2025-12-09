@@ -36,6 +36,7 @@ struct CreateWasmStats {
   COUNTER(created)                                                                                 \
   GAUGE(active, NeverImport)                                                                       \
   PLUGIN_COUNTER(recover_total)                                                                    \
+  PLUGIN_COUNTER(rebuild_total)                                                                    \
   PLUGIN_COUNTER(crash_total)                                                                      \
   PLUGIN_COUNTER(recover_error)                                                                    \
   PLUGIN_GAUGE(crash, NeverImport)

@@ -420,6 +420,16 @@ void ActiveStreamDecoderFilter::injectDecodedDataToFilterChain(Buffer::Instance&
     headers_continued_ = true;
     doHeaders(false);
   }
+#if defined(HIGRESS)
+  // Fix: When injecting data with end_stream=true, we must set remote_decode_complete_ flag
+  // to ensure subsequent filter chain iterations (e.g., via commonContinue) correctly recognize
+  // the stream is complete. Without this, if a downstream filter returns StopIteration and later
+  // resumes via continueDecoding()->commonContinue()->doData(), the complete() check would
+  // incorrectly return false, causing end_stream state inconsistency across the filter chain.
+  if (end_stream) {
+    parent_.state_.remote_decode_complete_ = true;
+  }
+#endif
   parent_.decodeData(this, data, end_stream,
                      FilterManager::FilterIterationStartState::CanStartFromCurrent);
 }
@@ -1679,6 +1689,16 @@ void ActiveStreamEncoderFilter::injectEncodedDataToFilterChain(Buffer::Instance&
     headers_continued_ = true;
     doHeaders(false);
   }
+#if defined(HIGRESS)
+  // Fix: When injecting data with end_stream=true, we must set local_complete_ flag to ensure
+  // subsequent filter chain iterations (e.g., via commonContinue) correctly recognize the stream
+  // is complete. Without this, if a downstream filter returns StopIteration and later resumes
+  // via continueEncoding()->commonContinue()->doData(), the complete() check would incorrectly
+  // return false, causing end_stream state inconsistency across the filter chain.
+  if (end_stream) {
+    parent_.state_.local_complete_ = true;
+  }
+#endif
   parent_.encodeData(this, data, end_stream,
                      FilterManager::FilterIterationStartState::CanStartFromCurrent);
 }

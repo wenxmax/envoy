@@ -48,7 +48,7 @@ public:
       failed = true;
     } else if (wasm->isFailed()) {
       ENVOY_LOG(info, "wasm vm is crashed, try to recover");
-      if (opt_ref->recover()) {
+      if (opt_ref->rebuild(true)) {
         ENVOY_LOG(info, "wasm vm recover success");
         wasm = opt_ref->handle()->wasmHandle()->wasm().get();
       } else {
